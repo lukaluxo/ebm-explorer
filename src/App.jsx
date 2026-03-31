@@ -3,7 +3,21 @@ import { useState, useEffect, useCallback } from "react";
 // ═══════════════════════════════════════════════
 // CONFIGURATION
 // ═══════════════════════════════════════════════
-const ENV_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY || "";
+const ENV_ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY || "";
+const ENV_GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
+
+const GEMINI_MODELS = [
+  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+  { id: "gemini-2.0-flash-lite-preview-02-05", label: "Gemini 2.0 Flash-Lite" },
+  { id: "gemini-1.5-pro", label: "Gemini 1.5 Pro" },
+  { id: "gemini-1.5-flash", label: "Gemini 1.5 Flash" },
+];
+
+const CLAUDE_MODELS = [
+  { id: "claude-3-7-sonnet-20250219", label: "Claude 3.7 Sonnet" },
+  { id: "claude-3-5-sonnet-20241022", label: "Claude 3.5 Sonnet" },
+  { id: "claude-3-5-haiku-20241022", label: "Claude 3.5 Haiku" },
+];
 
 // ═══ STORAGE HELPERS (localStorage) ═══
 function loadFromStorage(key) {
@@ -65,9 +79,9 @@ const WEEK_LABELS = [
   "Frontiers & Applications",
 ];
 
-// ═══ API HELPER ═══
-async function callClaude(prompt, userKey) {
-  const activeKey = userKey || ENV_API_KEY;
+// ═══ API HELPERS ═══
+async function callClaude(prompt, config) {
+  const activeKey = config.apiKey || ENV_ANTHROPIC_KEY;
   if (!activeKey) {
     throw new Error("No API key configured. Please add your Anthropic API key in Settings.");
   }
@@ -80,8 +94,9 @@ async function callClaude(prompt, userKey) {
       "anthropic-dangerous-direct-browser-access": "true",
     },
     body: JSON.stringify({
-      model: "claude-3-7-sonnet-20250219",
+      model: config.model || "claude-3-7-sonnet-20250219",
       max_tokens: 1000,
+      temperature: config.temperature ?? 0.7,
       tools: [{ type: "web_search_20250305" }],
       messages: [{ role: "user", content: prompt }],
     }),
@@ -93,11 +108,43 @@ async function callClaude(prompt, userKey) {
   return response.json();
 }
 
-function extractTextFromResponse(data) {
-  return data.content
-    .map((item) => (item.type === "text" ? item.text : ""))
-    .filter(Boolean)
-    .join("\n");
+async function callGemini(prompt, config) {
+  const activeKey = config.apiKey || ENV_GEMINI_KEY;
+  if (!activeKey) {
+    throw new Error("No API key configured. Please add your Gemini API key in Settings.");
+  }
+  const model = config.model || "gemini-2.0-flash";
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeKey}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        temperature: config.temperature ?? 0.7,
+      }
+    }),
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`API error ${response.status}: ${errText}`);
+  }
+  const data = await response.json();
+  return data;
+}
+
+function extractTextFromResponse(data, provider) {
+  if (provider === "anthropic") {
+    return data.content
+      .map((item) => (item.type === "text" ? item.text : ""))
+      .filter(Boolean)
+      .join("\n");
+  } else if (provider === "gemini") {
+    return data.candidates[0]?.content?.parts[0]?.text || "";
+  }
+  return "";
 }
 
 function parseJSON(text) {
@@ -120,7 +167,13 @@ export default function App() {
   const [weeklyLoading, setWeeklyLoading] = useState(false);
   const [weeklyError, setWeeklyError] = useState(null);
   const [celebrateAnim, setCelebrateAnim] = useState(false);
-  const [userApiKey, setUserApiKey] = useState("");
+  
+  const [aiProvider, setAiProvider] = useState("anthropic");
+  const [anthropicKey, setAnthropicKey] = useState("");
+  const [geminiKey, setGeminiKey] = useState("");
+  const [claudeModel, setClaudeModel] = useState("claude-3-7-sonnet-20250219");
+  const [geminiModel, setGeminiModel] = useState("gemini-2.0-flash");
+  const [temperature, setTemperature] = useState(0.7);
   const [showSettings, setShowSettings] = useState(false);
 
   // ── Initialize ──
@@ -145,8 +198,20 @@ export default function App() {
     if (savedHL) setHeadlines(savedHL);
     const savedWS = loadFromStorage("ebm-weekly-summary");
     if (savedWS) setWeeklySummary(savedWS);
-    const savedKey = loadFromStorage("ebm-user-api-key");
-    if (savedKey) setUserApiKey(savedKey);
+    
+    const savedProvider = loadFromStorage("ebm-ai-provider");
+    if (savedProvider) setAiProvider(savedProvider);
+    const savedAntKey = loadFromStorage("ebm-anthropic-key");
+    if (savedAntKey) setAnthropicKey(savedAntKey);
+    const savedGemKey = loadFromStorage("ebm-gemini-key");
+    if (savedGemKey) setGeminiKey(savedGemKey);
+    const savedClaudeModel = loadFromStorage("ebm-claude-model");
+    if (savedClaudeModel) setClaudeModel(savedClaudeModel);
+    const savedGeminiModel = loadFromStorage("ebm-gemini-model");
+    if (savedGeminiModel) setGeminiModel(savedGeminiModel);
+    const savedTemp = loadFromStorage("ebm-temperature");
+    if (savedTemp !== null) setTemperature(Number(savedTemp));
+    
     setLoading(false);
   }, []);
 
@@ -155,9 +220,34 @@ export default function App() {
     saveToStorage("ebm-game-state", newState);
   }, []);
 
-  const saveApiKey = (key) => {
-    setUserApiKey(key);
-    saveToStorage("ebm-user-api-key", key);
+  const saveAnthropicKey = (key) => {
+    setAnthropicKey(key);
+    saveToStorage("ebm-anthropic-key", key);
+  };
+
+  const saveGeminiKey = (key) => {
+    setGeminiKey(key);
+    saveToStorage("ebm-gemini-key", key);
+  };
+  
+  const saveProvider = (p) => {
+    setAiProvider(p);
+    saveToStorage("ebm-ai-provider", p);
+  };
+
+  const saveClaudeModel = (m) => {
+    setClaudeModel(m);
+    saveToStorage("ebm-claude-model", m);
+  };
+
+  const saveGeminiModel = (m) => {
+    setGeminiModel(m);
+    saveToStorage("ebm-gemini-model", m);
+  };
+
+  const saveTemperature = (t) => {
+    setTemperature(t);
+    saveToStorage("ebm-temperature", t);
   };
 
   // ── Current lesson ──
@@ -214,18 +304,23 @@ export default function App() {
     setHeadlinesLoading(true);
     setHeadlinesError(null);
     try {
-      const data = await callClaude(
-        `Search for the latest news and breakthroughs about energy-based models (EBMs) in machine learning and AI from the past week. Include developments about: diffusion models as EBMs, Hopfield networks, energy matching, compositional generation, score-based models, and EBM applications in protein design or language modeling.
+      const prompt = `Search for the latest news and breakthroughs about energy-based models (EBMs) in machine learning and AI from the past week. Include developments about: diffusion models as EBMs, Hopfield networks, energy matching, compositional generation, score-based models, and EBM applications in protein design or language modeling.
 
 Return ONLY a JSON array of 4-6 headline objects. No markdown, no backticks, no preamble. Each object must have:
 - "title": headline string (max 80 chars)
 - "source": source name
 - "date": approximate date string
 - "summary": 1-2 sentence summary (max 150 chars)
-- "relevance": one of ["foundational", "training", "application", "breakthrough"]`,
-        userApiKey
-      );
-      const text = extractTextFromResponse(data);
+- "relevance": one of ["foundational", "training", "application", "breakthrough"]`;
+
+      let data;
+      if (aiProvider === "anthropic") {
+        data = await callClaude(prompt, { apiKey: anthropicKey, model: claudeModel, temperature });
+      } else {
+        data = await callGemini(prompt, { apiKey: geminiKey, model: geminiModel, temperature });
+      }
+      
+      const text = extractTextFromResponse(data, aiProvider);
       const parsed = parseJSON(text);
       const hlData = { items: parsed, fetchedAt: new Date().toISOString() };
       setHeadlines(hlData);
@@ -246,8 +341,7 @@ Return ONLY a JSON array of 4-6 headline objects. No markdown, no backticks, no 
     );
     const currentWeek = todayLesson?.week || 1;
     try {
-      const data = await callClaude(
-        `You are an AI research digest curator. The user is learning about Energy-Based Models and is currently on week ${currentWeek} of their learning journey. They've completed ${completedLessons.length} lessons so far covering: ${completedLessons.map((l) => l.title).join(", ") || "none yet"}.
+      const prompt = `You are an AI research digest curator. The user is learning about Energy-Based Models and is currently on week ${currentWeek} of their learning journey. They've completed ${completedLessons.length} lessons so far covering: ${completedLessons.map((l) => l.title).join(", ") || "none yet"}.
 
 Search for and find the single most interesting/impactful paper about energy-based models from the past 1-2 weeks. Then write a concise, engaging summary.
 
@@ -258,10 +352,16 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
 - "tldr": 2-sentence plain-language summary
 - "whyItMatters": 2-sentence explanation of significance
 - "keyInsight": one memorable takeaway sentence
-- "connectionToLearning": which of their completed topics this connects to`,
-        userApiKey
-      );
-      const text = extractTextFromResponse(data);
+- "connectionToLearning": which of their completed topics this connects to`;
+
+      let data;
+      if (aiProvider === "anthropic") {
+        data = await callClaude(prompt, { apiKey: anthropicKey, model: claudeModel, temperature });
+      } else {
+        data = await callGemini(prompt, { apiKey: geminiKey, model: geminiModel, temperature });
+      }
+      
+      const text = extractTextFromResponse(data, aiProvider);
       const parsed = parseJSON(text);
       setWeeklySummary(parsed);
       saveToStorage("ebm-weekly-summary", parsed);
@@ -321,7 +421,7 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
   }
 
   const progress = (gameState.completedDays.length / CURRICULUM.length) * 100;
-  const hasApiKey = !!(userApiKey || ENV_API_KEY);
+  const hasApiKey = (aiProvider === "anthropic" && (anthropicKey || ENV_ANTHROPIC_KEY)) || (aiProvider === "gemini" && (geminiKey || ENV_GEMINI_KEY));
 
   const relevanceColors = {
     foundational: "#f59e0b",
@@ -980,7 +1080,7 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
                 onClick={fetchHeadlines}
                 disabled={headlinesLoading || !hasApiKey}
                 style={{
-                  background: headlinesLoading ? "#292524" : hasApiKey ? "#f59e0b" : "#292524",
+                  background: headlinesLoading ? "#292524" : hasApiKey ? (aiProvider === "anthropic" ? "#f59e0b" : "#22d3ee") : "#292524",
                   border: "none",
                   borderRadius: "8px",
                   color: headlinesLoading ? "#78716c" : hasApiKey ? "#0a0908" : "#78716c",
@@ -1011,7 +1111,7 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
               }}
             >
               AI-powered search for the latest EBM breakthroughs, papers, and
-              news.
+              news using <b>{aiProvider === "anthropic" ? "Claude" : "Gemini"}</b>.
             </p>
 
             {!hasApiKey && (
@@ -1037,19 +1137,7 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
                   ⚙️ Setup Required
                 </div>
                 <p style={{ fontSize: "0.82rem", color: "#a8a29e", lineHeight: 1.6 }}>
-                  To enable AI-powered headline hunting, add your Anthropic API key in Settings or create a{" "}
-                  <code
-                    style={{
-                      background: "#292524",
-                      padding: "0.1rem 0.4rem",
-                      borderRadius: "4px",
-                      fontSize: "0.78rem",
-                      fontFamily: "monospace",
-                    }}
-                  >
-                    .env
-                  </code>{" "}
-                  file in the project root.
+                  To enable AI-powered headline hunting, add your <b>{aiProvider === "anthropic" ? "Anthropic" : "Gemini"}</b> API key in Settings.
                 </p>
               </div>
             )}
@@ -1195,7 +1283,7 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
                 onClick={fetchWeeklySummary}
                 disabled={weeklyLoading || !hasApiKey}
                 style={{
-                  background: weeklyLoading ? "#292524" : hasApiKey ? "#a78bfa" : "#292524",
+                  background: weeklyLoading ? "#292524" : hasApiKey ? (aiProvider === "anthropic" ? "#a78bfa" : "#22d3ee") : "#292524",
                   border: "none",
                   borderRadius: "8px",
                   color: weeklyLoading ? "#78716c" : hasApiKey ? "#0a0908" : "#78716c",
@@ -1225,7 +1313,7 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
                 marginBottom: "1.5rem",
               }}
             >
-              An AI-curated paper digest personalized to your learning progress.
+              An AI-curated paper digest personalized to your learning progress using <b>{aiProvider === "anthropic" ? "Claude" : "Gemini"}</b>.
             </p>
 
             {!hasApiKey && (
@@ -1251,7 +1339,7 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
                   ⚙️ Setup Required
                 </div>
                 <p style={{ fontSize: "0.82rem", color: "#a8a29e" }}>
-                  Add your Anthropic API key in Settings to enable this feature.
+                  Add your <b>{aiProvider === "anthropic" ? "Anthropic" : "Gemini"}</b> API key in Settings to enable this feature.
                 </p>
               </div>
             )}
@@ -1453,14 +1541,16 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
               border: "1px solid #292524",
               borderRadius: "16px",
               width: "100%",
-              maxWidth: "450px",
+              maxWidth: "480px",
+              maxHeight: "90vh",
+              overflowY: "auto",
               padding: "1.5rem",
               boxShadow: "0 20px 50px rgba(0,0,0,0.5)"
             }}
             onClick={e => e.stopPropagation()}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-              <h3 style={{ fontSize: "1.1rem", fontWeight: 700, margin: 0 }}>⚙️ Settings</h3>
+              <h3 style={{ fontSize: "1.1rem", fontWeight: 700, margin: 0 }}>⚙️ AI Settings</h3>
               <button 
                 onClick={() => setShowSettings(false)}
                 style={{ background: "none", border: "none", color: "#78716c", cursor: "pointer", fontSize: "1.2rem" }}
@@ -1478,34 +1568,208 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
                   color: "#78716c", 
                   textTransform: "uppercase",
                   letterSpacing: "0.1em",
-                  marginBottom: "0.5rem"
+                  marginBottom: "0.8rem"
                 }}
               >
-                Anthropic API Key
+                AI Provider Preference
               </label>
-              <input 
-                type="password"
-                value={userApiKey}
-                onChange={e => saveApiKey(e.target.value)}
-                placeholder="sk-ant-..."
-                style={{
-                  width: "100%",
-                  background: "#1c1917",
-                  border: "1px solid #292524",
-                  borderRadius: "8px",
-                  padding: "0.75rem",
-                  color: "#fafaf9",
-                  fontSize: "0.85rem",
-                  fontFamily: "monospace",
-                  outline: "none"
-                }}
-              />
-              <p style={{ fontSize: "0.72rem", color: "#57534e", marginTop: "0.6rem", lineHeight: 1.5 }}>
-                Your key is stored locally in your browser (localStorage). It is required for <b>Headline Hunter</b> and <b>Weekly Paper</b> features.
-              </p>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                {[
+                  { id: "anthropic", label: "Anthropic Claude", icon: "🐙" },
+                  { id: "gemini", label: "Google Gemini", icon: "✨" }
+                ].map(p => (
+                  <button
+                    key={p.id}
+                    onClick={() => saveProvider(p.id)}
+                    style={{
+                      flex: 1,
+                      background: aiProvider === p.id ? "#1c1917" : "transparent",
+                      border: `1px solid ${aiProvider === p.id ? (p.id === "anthropic" ? "#f59e0b" : "#22d3ee") : "#292524"}`,
+                      borderRadius: "8px",
+                      padding: "0.6rem",
+                      color: aiProvider === p.id ? "#fafaf9" : "#78716c",
+                      fontSize: "0.75rem",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "0.4rem",
+                      transition: "all 0.2s"
+                    }}
+                  >
+                    <span>{p.icon}</span> {p.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div style={{ borderTop: "1px solid #1c1917", paddingTop: "1rem", marginTop: "1rem" }}>
+            <div style={{ padding: "1.25rem", background: "#1c1917", borderRadius: "12px", marginBottom: "1.5rem", border: "1px solid #292524" }}>
+              <div style={{ marginBottom: "1.2rem" }}>
+                <label 
+                  style={{ 
+                    display: "block", 
+                    fontSize: "0.65rem", 
+                    fontFamily: "monospace", 
+                    color: aiProvider === "anthropic" ? "#f59e0b" : "#78716c", 
+                    textTransform: "uppercase",
+                    letterSpacing: "0.1em",
+                    marginBottom: "0.5rem"
+                  }}
+                >
+                  Anthropic API Key
+                </label>
+                <input 
+                  type="password"
+                  value={anthropicKey}
+                  onChange={e => saveAnthropicKey(e.target.value)}
+                  placeholder="sk-ant-..."
+                  style={{
+                    width: "100%",
+                    background: "#0a0908",
+                    border: "1px solid #292524",
+                    borderRadius: "8px",
+                    padding: "0.6rem",
+                    color: "#fafaf9",
+                    fontSize: "0.82rem",
+                    fontFamily: "monospace",
+                    outline: "none"
+                  }}
+                />
+              </div>
+
+              <div style={{ marginBottom: "0rem" }}>
+                <label 
+                  style={{ 
+                    display: "block", 
+                    fontSize: "0.65rem", 
+                    fontFamily: "monospace", 
+                    color: aiProvider === "gemini" ? "#22d3ee" : "#78716c", 
+                    textTransform: "uppercase",
+                    letterSpacing: "0.1em",
+                    marginBottom: "0.5rem"
+                  }}
+                >
+                  Gemini API Key
+                </label>
+                <input 
+                  type="password"
+                  value={geminiKey}
+                  onChange={e => saveGeminiKey(e.target.value)}
+                  placeholder="AIzaSy..."
+                  style={{
+                    width: "100%",
+                    background: "#0a0908",
+                    border: "1px solid #292524",
+                    borderRadius: "8px",
+                    padding: "0.6rem",
+                    color: "#fafaf9",
+                    fontSize: "0.82rem",
+                    fontFamily: "monospace",
+                    outline: "none"
+                  }}
+                />
+              </div>
+            </div>
+
+            <div style={{ marginBottom: "1.5rem" }}>
+              <label 
+                style={{ 
+                  display: "block", 
+                  fontSize: "0.7rem", 
+                  fontFamily: "monospace", 
+                  color: "#78716c", 
+                  textTransform: "uppercase",
+                  letterSpacing: "0.1em",
+                  marginBottom: "0.8rem"
+                }}
+              >
+                Model Selection
+              </label>
+              {aiProvider === "anthropic" ? (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.4rem" }}>
+                  {CLAUDE_MODELS.map(m => (
+                    <button
+                      key={m.id}
+                      onClick={() => saveClaudeModel(m.id)}
+                      style={{
+                        background: claudeModel === m.id ? "#292524" : "transparent",
+                        border: `1px solid ${claudeModel === m.id ? "#f59e0b" : "#292524"}`,
+                        borderRadius: "6px",
+                        padding: "0.5rem",
+                        color: claudeModel === m.id ? "#fafaf9" : "#78716c",
+                        fontSize: "0.7rem",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        transition: "all 0.2s"
+                      }}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.4rem" }}>
+                  {GEMINI_MODELS.map(m => (
+                    <button
+                      key={m.id}
+                      onClick={() => saveGeminiModel(m.id)}
+                      style={{
+                        background: geminiModel === m.id ? "#292524" : "transparent",
+                        border: `1px solid ${geminiModel === m.id ? "#22d3ee" : "#292524"}`,
+                        borderRadius: "6px",
+                        padding: "0.5rem",
+                        color: geminiModel === m.id ? "#fafaf9" : "#78716c",
+                        fontSize: "0.7rem",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        transition: "all 0.2s"
+                      }}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div style={{ marginBottom: "1.5rem" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem" }}>
+                <label 
+                  style={{ 
+                    fontSize: "0.7rem", 
+                    fontFamily: "monospace", 
+                    color: "#78716c", 
+                    textTransform: "uppercase",
+                    letterSpacing: "0.1em"
+                  }}
+                >
+                  Temperature
+                </label>
+                <span style={{ fontSize: "0.7rem", fontFamily: "monospace", color: "#fafaf9" }}>{temperature}</span>
+              </div>
+              <input 
+                type="range"
+                min="0"
+                max="1"
+                step="0.1"
+                value={temperature}
+                onChange={e => saveTemperature(Number(e.target.value))}
+                style={{
+                  width: "100%",
+                  accentColor: aiProvider === "anthropic" ? "#f59e0b" : "#22d3ee",
+                  height: "4px",
+                  background: "#292524",
+                  borderRadius: "2px",
+                  cursor: "pointer"
+                }}
+              />
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: "0.3rem" }}>
+                <span style={{ fontSize: "0.6rem", color: "#57534e" }}>Precise (0)</span>
+                <span style={{ fontSize: "0.6rem", color: "#57534e" }}>Creative (1)</span>
+              </div>
+            </div>
+
+            <div style={{ borderTop: "1px solid #1c1917", paddingTop: "1rem" }}>
               <button 
                 onClick={() => setShowSettings(false)}
                 style={{
@@ -1523,7 +1787,7 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
                 onMouseOver={e => e.target.style.background = "#3f3a36"}
                 onMouseOut={e => e.target.style.background = "#292524"}
               >
-                Close Settings
+                Save & Close
               </button>
             </div>
           </div>
