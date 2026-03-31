@@ -3,19 +3,7 @@ import { useState, useEffect, useCallback } from "react";
 // ═══════════════════════════════════════════════
 // CONFIGURATION
 // ═══════════════════════════════════════════════
-// For the AI-powered features (Headline Hunter & Weekly Paper),
-// set your Anthropic API key as an environment variable:
-//   VITE_ANTHROPIC_API_KEY=sk-ant-...
-//
-// Without it, the app still works perfectly for the daily
-// lessons and knowledge tree — the AI features just won't fire.
-//
-// ⚠️  For production, proxy API calls through a backend to
-//     keep your key secret. See /api/README.md or deploy to
-//     Vercel with a serverless function.
-// ═══════════════════════════════════════════════
-
-const API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY || "";
+const ENV_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY || "";
 
 // ═══ STORAGE HELPERS (localStorage) ═══
 function loadFromStorage(key) {
@@ -78,22 +66,23 @@ const WEEK_LABELS = [
 ];
 
 // ═══ API HELPER ═══
-async function callClaude(prompt) {
-  if (!API_KEY) {
-    throw new Error("No API key configured. Set VITE_ANTHROPIC_API_KEY in your .env file.");
+async function callClaude(prompt, userKey) {
+  const activeKey = userKey || ENV_API_KEY;
+  if (!activeKey) {
+    throw new Error("No API key configured. Please add your Anthropic API key in Settings.");
   }
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": API_KEY,
+      "x-api-key": activeKey,
       "anthropic-version": "2023-06-01",
       "anthropic-dangerous-direct-browser-access": "true",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-3-7-sonnet-20250219",
       max_tokens: 1000,
-      tools: [{ type: "web_search_20250305", name: "web_search" }],
+      tools: [{ type: "web_search_20250305" }],
       messages: [{ role: "user", content: prompt }],
     }),
   });
@@ -131,6 +120,8 @@ export default function App() {
   const [weeklyLoading, setWeeklyLoading] = useState(false);
   const [weeklyError, setWeeklyError] = useState(null);
   const [celebrateAnim, setCelebrateAnim] = useState(false);
+  const [userApiKey, setUserApiKey] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
 
   // ── Initialize ──
   useEffect(() => {
@@ -154,6 +145,8 @@ export default function App() {
     if (savedHL) setHeadlines(savedHL);
     const savedWS = loadFromStorage("ebm-weekly-summary");
     if (savedWS) setWeeklySummary(savedWS);
+    const savedKey = loadFromStorage("ebm-user-api-key");
+    if (savedKey) setUserApiKey(savedKey);
     setLoading(false);
   }, []);
 
@@ -161,6 +154,11 @@ export default function App() {
     setGameState(newState);
     saveToStorage("ebm-game-state", newState);
   }, []);
+
+  const saveApiKey = (key) => {
+    setUserApiKey(key);
+    saveToStorage("ebm-user-api-key", key);
+  };
 
   // ── Current lesson ──
   const todayLesson = gameState
@@ -224,7 +222,8 @@ Return ONLY a JSON array of 4-6 headline objects. No markdown, no backticks, no 
 - "source": source name
 - "date": approximate date string
 - "summary": 1-2 sentence summary (max 150 chars)
-- "relevance": one of ["foundational", "training", "application", "breakthrough"]`
+- "relevance": one of ["foundational", "training", "application", "breakthrough"]`,
+        userApiKey
       );
       const text = extractTextFromResponse(data);
       const parsed = parseJSON(text);
@@ -259,7 +258,8 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
 - "tldr": 2-sentence plain-language summary
 - "whyItMatters": 2-sentence explanation of significance
 - "keyInsight": one memorable takeaway sentence
-- "connectionToLearning": which of their completed topics this connects to`
+- "connectionToLearning": which of their completed topics this connects to`,
+        userApiKey
       );
       const text = extractTextFromResponse(data);
       const parsed = parseJSON(text);
@@ -321,7 +321,7 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
   }
 
   const progress = (gameState.completedDays.length / CURRICULUM.length) * 100;
-  const hasApiKey = !!API_KEY;
+  const hasApiKey = !!(userApiKey || ENV_API_KEY);
 
   const relevanceColors = {
     foundational: "#f59e0b",
@@ -387,9 +387,27 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
         >
           <span>🔥 {gameState.streak}d streak</span>
           <span>✨ {gameState.xp} XP</span>
-          <span>
-            {gameState.completedDays.length}/{CURRICULUM.length} lessons
-          </span>
+          <button 
+            onClick={() => setShowSettings(true)}
+            style={{
+              background: "none",
+              border: "none",
+              color: "#78716c",
+              cursor: "pointer",
+              fontSize: "0.72rem",
+              fontFamily: "monospace",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.3rem",
+              padding: "0.2rem 0.5rem",
+              borderRadius: "4px",
+              transition: "background 0.2s"
+            }}
+            onMouseOver={e => e.target.style.background = "#1c1917"}
+            onMouseOut={e => e.target.style.background = "none"}
+          >
+            ⚙️ Settings
+          </button>
         </div>
       </div>
 
@@ -1019,7 +1037,7 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
                   ⚙️ Setup Required
                 </div>
                 <p style={{ fontSize: "0.82rem", color: "#a8a29e", lineHeight: 1.6 }}>
-                  To enable AI-powered headline hunting, create a{" "}
+                  To enable AI-powered headline hunting, add your Anthropic API key in Settings or create a{" "}
                   <code
                     style={{
                       background: "#292524",
@@ -1031,23 +1049,8 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
                   >
                     .env
                   </code>{" "}
-                  file in the project root with:
+                  file in the project root.
                 </p>
-                <pre
-                  style={{
-                    background: "#0f0e0d",
-                    border: "1px solid #292524",
-                    borderRadius: "8px",
-                    padding: "0.75rem 1rem",
-                    marginTop: "0.75rem",
-                    fontSize: "0.75rem",
-                    fontFamily: "monospace",
-                    color: "#22d3ee",
-                    overflowX: "auto",
-                  }}
-                >
-                  VITE_ANTHROPIC_API_KEY=sk-ant-your-key-here
-                </pre>
               </div>
             )}
 
@@ -1248,18 +1251,7 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
                   ⚙️ Setup Required
                 </div>
                 <p style={{ fontSize: "0.82rem", color: "#a8a29e" }}>
-                  Add your Anthropic API key in a{" "}
-                  <code
-                    style={{
-                      background: "#292524",
-                      padding: "0.1rem 0.4rem",
-                      borderRadius: "4px",
-                      fontFamily: "monospace",
-                    }}
-                  >
-                    .env
-                  </code>{" "}
-                  file to enable this feature.
+                  Add your Anthropic API key in Settings to enable this feature.
                 </p>
               </div>
             )}
@@ -1439,6 +1431,104 @@ Return ONLY a JSON object (no markdown, no backticks, no preamble) with:
           </div>
         )}
       </div>
+
+      {/* ═══ SETTINGS MODAL ═══ */}
+      {showSettings && (
+        <div 
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.85)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: "1rem"
+          }}
+          onClick={() => setShowSettings(false)}
+        >
+          <div 
+            style={{
+              background: "#0f0e0d",
+              border: "1px solid #292524",
+              borderRadius: "16px",
+              width: "100%",
+              maxWidth: "450px",
+              padding: "1.5rem",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.5)"
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+              <h3 style={{ fontSize: "1.1rem", fontWeight: 700, margin: 0 }}>⚙️ Settings</h3>
+              <button 
+                onClick={() => setShowSettings(false)}
+                style={{ background: "none", border: "none", color: "#78716c", cursor: "pointer", fontSize: "1.2rem" }}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{ marginBottom: "1.5rem" }}>
+              <label 
+                style={{ 
+                  display: "block", 
+                  fontSize: "0.7rem", 
+                  fontFamily: "monospace", 
+                  color: "#78716c", 
+                  textTransform: "uppercase",
+                  letterSpacing: "0.1em",
+                  marginBottom: "0.5rem"
+                }}
+              >
+                Anthropic API Key
+              </label>
+              <input 
+                type="password"
+                value={userApiKey}
+                onChange={e => saveApiKey(e.target.value)}
+                placeholder="sk-ant-..."
+                style={{
+                  width: "100%",
+                  background: "#1c1917",
+                  border: "1px solid #292524",
+                  borderRadius: "8px",
+                  padding: "0.75rem",
+                  color: "#fafaf9",
+                  fontSize: "0.85rem",
+                  fontFamily: "monospace",
+                  outline: "none"
+                }}
+              />
+              <p style={{ fontSize: "0.72rem", color: "#57534e", marginTop: "0.6rem", lineHeight: 1.5 }}>
+                Your key is stored locally in your browser (localStorage). It is required for <b>Headline Hunter</b> and <b>Weekly Paper</b> features.
+              </p>
+            </div>
+
+            <div style={{ borderTop: "1px solid #1c1917", paddingTop: "1rem", marginTop: "1rem" }}>
+              <button 
+                onClick={() => setShowSettings(false)}
+                style={{
+                  width: "100%",
+                  background: "#292524",
+                  border: "none",
+                  borderRadius: "8px",
+                  color: "#fafaf9",
+                  padding: "0.75rem",
+                  fontSize: "0.85rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  transition: "background 0.2s"
+                }}
+                onMouseOver={e => e.target.style.background = "#3f3a36"}
+                onMouseOut={e => e.target.style.background = "#292524"}
+              >
+                Close Settings
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

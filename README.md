@@ -1,5 +1,7 @@
 # ⚡ EBM Explorer
 
+## [🚀 Try Me: https://lukaluxo.github.io/ebm-explorer/](https://lukaluxo.github.io/ebm-explorer/)
+
 A gamified daily learning app for **Energy-Based Models** — the framework quietly unifying diffusion models, Hopfield networks, LLMs, and reinforcement learning.
 
 ![EBM Explorer](https://img.shields.io/badge/React-18-blue) ![Vite](https://img.shields.io/badge/Vite-6-purple) ![License](https://img.shields.io/badge/license-MIT-green)
